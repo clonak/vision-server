@@ -6,6 +6,7 @@ const openai = new OpenAI({
 
 export default async function handler(req, res) {
 
+  // Permitir CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -23,48 +24,68 @@ export default async function handler(req, res) {
     const { blocks } = req.body;
 
     if (!blocks || !Array.isArray(blocks)) {
-      return res.status(400).json({ error: "No blocks provided" });
+      return res.status(400).json({ error: "Invalid blocks format" });
     }
 
-    const texts = blocks.map(b => b.text).join("\n---\n");
+    // Junta todos os textos numerados
+    const numberedText = blocks
+      .map((b, i) => `${i + 1}. ${b.text}`)
+      .join("\n");
 
-    const response = await openai.chat.completions.create({
+    const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      temperature: 0,
+      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
-          content: `
-Translate the following text blocks to Portuguese.
-Return ONLY a JSON array of translated texts in the same order.
-`
+          content: "Translate the numbered sentences to Portuguese. Return JSON with format: { translations: [ { index: number, translated_text: string } ] }"
         },
         {
           role: "user",
-          content: texts
+          content: numberedText
         }
-      ]
+      ],
     });
 
-    const raw = response.choices[0].message.content
-      .replace(/```json/g, "")
-      .replace(/```/g, "")
-      .trim();
+    const answer = completion.choices[0].message.content;
 
-    const translations = JSON.parse(raw);
+    let parsed;
 
-    const result = blocks.map((block, i) => ({
-      translated_text: translations[i],
-      x: block.x,
-      y: block.y,
-      width: block.width,
-      height: block.height
-    }));
+    try {
+      parsed = JSON.parse(answer);
+    } catch (err) {
+      console.error("Invalid JSON from model:", answer);
+      return res.status(500).json({
+        error: "Model returned invalid JSON",
+        raw: answer
+      });
+    }
 
-    return res.status(200).json(result);
+    if (!parsed.translations || !Array.isArray(parsed.translations)) {
+      return res.status(500).json({
+        error: "Unexpected response structure",
+        raw: parsed
+      });
+    }
+
+    // Mapear tradução para os blocos originais
+    const translatedBlocks = blocks.map((block, i) => {
+      const match = parsed.translations.find(t => t.index === i + 1);
+
+      return {
+        ...block,
+        translated_text: match ? match.translated_text : block.text
+      };
+    });
+
+    return res.status(200).json({
+      blocks: translatedBlocks
+    });
 
   } catch (error) {
-    console.error(error);
-    return res.status(500).json({ error: "Translation failed" });
+    console.error("Server error:", error);
+    return res.status(500).json({
+      error: "Internal server error"
+    });
   }
 }
