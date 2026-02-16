@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import fetch from "node-fetch";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -6,7 +7,6 @@ const openai = new OpenAI({
 
 export default async function handler(req, res) {
 
-  // Permitir CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -20,72 +20,69 @@ export default async function handler(req, res) {
   }
 
   try {
+    const { imageUrl } = req.body;
 
-    const { blocks } = req.body;
-
-    if (!blocks || !Array.isArray(blocks)) {
-      return res.status(400).json({ error: "Invalid blocks format" });
+    if (!imageUrl) {
+      return res.status(400).json({ error: "Missing imageUrl" });
     }
 
-    // Junta todos os textos numerados
-    const numberedText = blocks
-      .map((b, i) => `${i + 1}. ${b.text}`)
-      .join("\n");
+    // Download imagem
+    const imageResponse = await fetch(imageUrl);
+    const buffer = await imageResponse.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString("base64");
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
-          content: "Translate the numbered sentences to Portuguese. Return JSON with format: { translations: [ { index: number, translated_text: string } ] }"
+          content: `
+You are translating dialogue from a manhua.
+
+1. Detect all readable dialogue text in the image.
+2. Group lines that belong to the same speech bubble.
+3. Translate naturally into European Portuguese.
+4. Do NOT translate literally.
+5. Make it sound like natural spoken dialogue.
+6. Return bounding boxes relative to the image.
+
+Return JSON in this exact format:
+
+{
+  "blocks": [
+    {
+      "x": number,
+      "y": number,
+      "width": number,
+      "height": number,
+      "translated_text": string
+    }
+  ]
+}
+`
         },
         {
           role: "user",
-          content: numberedText
+          content: [
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:image/webp;base64,${base64}`
+              }
+            }
+          ]
         }
-      ],
+      ]
     });
 
-    const answer = completion.choices[0].message.content;
+    const content = completion.choices[0].message.content;
+    const parsed = JSON.parse(content);
 
-    let parsed;
-
-    try {
-      parsed = JSON.parse(answer);
-    } catch (err) {
-      console.error("Invalid JSON from model:", answer);
-      return res.status(500).json({
-        error: "Model returned invalid JSON",
-        raw: answer
-      });
-    }
-
-    if (!parsed.translations || !Array.isArray(parsed.translations)) {
-      return res.status(500).json({
-        error: "Unexpected response structure",
-        raw: parsed
-      });
-    }
-
-    // Mapear tradução para os blocos originais
-    const translatedBlocks = blocks.map((block, i) => {
-      const match = parsed.translations.find(t => t.index === i + 1);
-
-      return {
-        ...block,
-        translated_text: match ? match.translated_text : block.text
-      };
-    });
-
-    return res.status(200).json({
-      blocks: translatedBlocks
-    });
+    return res.status(200).json(parsed);
 
   } catch (error) {
     console.error("Server error:", error);
-    return res.status(500).json({
-      error: "Internal server error"
-    });
+    return res.status(500).json({ error: "Internal server error" });
   }
 }
