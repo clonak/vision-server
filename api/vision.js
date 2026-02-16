@@ -20,58 +20,51 @@ export default async function handler(req, res) {
 
   try {
 
-    const { imageBase64 } = req.body;
+    const { blocks } = req.body;
 
-    if (!imageBase64) {
-      return res.status(400).json({ error: "No image provided" });
+    if (!blocks || !Array.isArray(blocks)) {
+      return res.status(400).json({ error: "No blocks provided" });
     }
+
+    const texts = blocks.map(b => b.text).join("\n---\n");
 
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0,
-      max_tokens: 2000,
       messages: [
         {
           role: "system",
           content: `
-You are an OCR + translation engine for manhwa.
-
-Detect ALL text blocks.
-Translate them to Portuguese.
-
-Return ONLY valid JSON array:
-
-[
-  {
-    "translated_text": "...",
-    "x": number,
-    "y": number,
-    "width": number,
-    "height": number
-  }
-]
+Translate the following text blocks to Portuguese.
+Return ONLY a JSON array of translated texts in the same order.
 `
         },
         {
           role: "user",
-          content: [
-            {
-              type: "image_url",
-              image_url: {
-                url: imageBase64
-              }
-            }
-          ]
+          content: texts
         }
       ]
     });
 
-    return res.status(200).json({
-      result: response
-    });
+    const raw = response.choices[0].message.content
+      .replace(/```json/g, "")
+      .replace(/```/g, "")
+      .trim();
+
+    const translations = JSON.parse(raw);
+
+    const result = blocks.map((block, i) => ({
+      translated_text: translations[i],
+      x: block.x,
+      y: block.y,
+      width: block.width,
+      height: block.height
+    }));
+
+    return res.status(200).json(result);
 
   } catch (error) {
-    console.error("VISION ERROR:", error);
-    return res.status(500).json({ error: "Vision request failed" });
+    console.error(error);
+    return res.status(500).json({ error: "Translation failed" });
   }
 }
